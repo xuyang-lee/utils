@@ -8,8 +8,8 @@ const (
 	Tag = "mapper"
 )
 
-// ParamsTag 解析tag, bool控制是否无视tag
-func ParamsTag(tag string) (res string, ignore bool) {
+// ParseTag 解析tag, bool控制是否无视tag
+func ParseTag(tag string) (res string, ignore bool) {
 	if tag == "" {
 		return "", false
 	}
