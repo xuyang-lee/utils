@@ -1,45 +1,70 @@
 package bitmap
 
-import "fmt"
+import (
+	"errors"
+)
 
 const (
 	defaultStep = 1
+	badBit      = -1 // bit < 0 means invalid position
+	baseBit     = 1
+)
+
+var (
+	ErrOutOfBounds = errors.New("position out of bounds")
+	ErrInvalidStep = errors.New("invalid step, must be greater than 0")
+	ErrInvalidSize = errors.New("invalid size, size is too large or negative")
 )
 
 // Bitmap is a slice of bytes.
 type Bitmap struct {
-	data   []byte
+	//data   []byte
+	data   basemap
 	size   int // Total number of bits in the bitmap
 	step   int // step of two nearly pos
 	offset int // first bit index
 }
 
 // NewBitmap creates a new Bitmap with the given size in bits.
-func NewBitmap(size int) *Bitmap {
+func NewBitmap(size int, order ...bitOrder) *Bitmap {
+	var bo = BitOrderMSB
+	if len(order) > 0 {
+		bo = order[0]
+	}
+
 	return &Bitmap{
-		data: make([]byte, (size+7)/8), // Round up to the nearest byte
+		data: newBasemap(size, bo), // Round up to the nearest byte
 		size: size,
 		step: defaultStep,
 	}
 }
 
 // NewBitmapWithOffset creates a new Bitmap with the given size in bits and the first pos is offset.
-func NewBitmapWithOffset(size int, offset int) *Bitmap {
+func NewBitmapWithOffset(size int, offset int, order ...bitOrder) *Bitmap {
+	var bo = BitOrderMSB
+	if len(order) > 0 {
+		bo = order[0]
+	}
 	return &Bitmap{
-		data:   make([]byte, (size+7)/8), // Round up to the nearest byte
+		data:   newBasemap(size, bo), // Round up to the nearest byte
 		size:   size,
 		step:   defaultStep,
 		offset: offset,
 	}
 }
 
-// NewBitmapWithRang creates a new Bitmap from begin to end(without end) with step.
-func NewBitmapWithRang(begin int, end int, step int) *Bitmap {
+// NewBitmapWithRang creates a new Bitmap with step, whose range from begin to end(without end).
+func NewBitmapWithRang(begin int, end int, step int, order ...bitOrder) *Bitmap {
 	if step <= 0 {
 		panic("step must be greater than 0")
 	}
+	var bo = BitOrderMSB
+	if len(order) > 0 {
+		bo = order[0]
+	}
+
 	return &Bitmap{
-		data:   make([]byte, (end-begin+7)/8), // Round up to the nearest byte
+		data:   newBasemap((end-begin+step-1)/step, bo), // Round up to the nearest byte
 		size:   (end - begin + step - 1) / step,
 		offset: begin,
 		step:   step,
@@ -50,11 +75,11 @@ func NewBitmapWithRang(begin int, end int, step int) *Bitmap {
 func (b *Bitmap) encodePos(pos int) int {
 	bit := pos - b.offset
 	if bit%b.step != 0 {
-		panic("position out of bounds")
+		panic(ErrOutOfBounds)
 	}
 	bit = bit / b.step
 	if bit < 0 || bit >= b.size {
-		panic("position out of bounds")
+		panic(ErrOutOfBounds)
 	}
 	return bit
 }
@@ -63,11 +88,11 @@ func (b *Bitmap) encodePos(pos int) int {
 func (b *Bitmap) tryEncodePos(pos int) (int, error) {
 	bit := pos - b.offset
 	if bit%b.step != 0 {
-		return -1, fmt.Errorf("position out of bounds")
+		return badBit, ErrOutOfBounds
 	}
 	bit = bit / b.step
 	if bit < 0 || bit >= b.size {
-		return -1, fmt.Errorf("position out of bounds")
+		return badBit, ErrOutOfBounds
 	}
 	return bit, nil
 }
@@ -80,36 +105,29 @@ func (b *Bitmap) decodePos(bit int) int {
 // Set sets the bit at pos to 1.
 func (b *Bitmap) Set(pos int) {
 	bit := b.encodePos(pos)
-	byteIndex := bit / 8      // Find the byte index
-	bitIndex := uint(bit % 8) // Find the bit index within the byte
-	b.data[byteIndex] |= 1 << bitIndex
+	b.data.set(bit)
 }
 
 // Clear clears the bit at pos to 0.
 func (b *Bitmap) Clear(pos int) {
 	bit := b.encodePos(pos)
-	byteIndex := bit / 8
-	bitIndex := uint(bit % 8)
-	// A &^ B 位清空操作符，A的第B位清空
-	// A &^ B <==> A & (^B)
-	b.data[byteIndex] &^= 1 << bitIndex
+	b.data.clear(bit)
 }
 
 // IsSet checks if the bit at pos is set to 1.
 func (b *Bitmap) IsSet(pos int) bool {
 	bit := b.encodePos(pos)
-	byteIndex := bit / 8
-	bitIndex := uint(bit % 8)
-	return (b.data[byteIndex] & (1 << bitIndex)) != 0
+	return b.data.check(bit)
 }
 
 // GetPos returns the positions of all the set bits in the bitmap.
 func (b *Bitmap) GetPos() []int {
 	poses := make([]int, 0)
-	for i := range b.data {
+	for i := 0; i < b.data.size(); i++ {
 		for j := 0; j < 8; j++ {
-			if (i*8+j < b.size) && b.data[i]&(1<<j) != 0 {
-				poses = append(poses, b.decodePos(i*8+j))
+			cursor := i*8 + j
+			if (cursor < b.size) && b.data.check(cursor) {
+				poses = append(poses, b.decodePos(cursor))
 			}
 		}
 	}
@@ -118,10 +136,11 @@ func (b *Bitmap) GetPos() []int {
 
 func (b *Bitmap) GetNoPos() []int {
 	poses := make([]int, 0)
-	for i := range b.data {
+	for i := 0; i < b.data.size(); i++ {
 		for j := 0; j < 8; j++ {
-			if (i*8+j < b.size) && b.data[i]&(1<<j) == 0 {
-				poses = append(poses, b.decodePos(i*8+j))
+			cursor := i*8 + j
+			if (cursor < b.size) && !b.data.check(cursor) {
+				poses = append(poses, b.decodePos(cursor))
 			}
 		}
 	}
@@ -134,9 +153,7 @@ func (b *Bitmap) TrySet(pos int) error {
 	if err != nil {
 		return err
 	}
-	byteIndex := bit / 8      // Find the byte index
-	bitIndex := uint(bit % 8) // Find the bit index within the byte
-	b.data[byteIndex] |= 1 << bitIndex
+	b.data.set(bit)
 	return err
 }
 
@@ -146,11 +163,7 @@ func (b *Bitmap) TryClear(pos int) error {
 	if err != nil {
 		return err
 	}
-	byteIndex := bit / 8
-	bitIndex := uint(bit % 8)
-	// A &^ B 位清空操作符，A的第B位清空
-	// A &^ B <==> A & (^B)
-	b.data[byteIndex] &^= 1 << bitIndex
+	b.data.clear(bit)
 	return nil
 }
 
@@ -160,9 +173,7 @@ func (b *Bitmap) IsSetWithErr(pos int) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	byteIndex := bit / 8
-	bitIndex := uint(bit % 8)
-	return (b.data[byteIndex] & (1 << bitIndex)) != 0, nil
+	return b.data.check(bit), nil
 }
 
 func (b *Bitmap) Size() int {
